@@ -5,6 +5,7 @@
 ### Fixed
 
 - The guard no longer reads a redirection as a package: `uv tool install ruff 2>&1 | tail` was blocked as "2 doesn't exist on PyPI".
+- `init --global` no longer hooks Cursor when Claude Code is hooked: Cursor runs the hooks in `~/.claude/settings.json` too, so every check ran twice.
 
 ## [0.1.2] - 2026-11-07
 

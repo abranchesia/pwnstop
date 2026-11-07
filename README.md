@@ -172,7 +172,7 @@ jobs:
 
 Agent-specific notes:
 
-- **Cursor and Copilot also run a project's `.claude/settings*.json` hooks**, so `init` doesn't add theirs when Claude Code is hooked.
+- **Cursor and Copilot also run a project's `.claude/settings*.json` hooks**, so `init` doesn't add theirs when Claude Code is hooked. Cursor also runs the ones in `~/.claude/settings.json`, so `init --global` skips it too; Copilot doesn't, so it gets its own.
 - **Codex** asks you to approve new hooks once with `/hooks`, and loads project hooks only in trusted projects.
 - **Copilot** denies a command when its hook can't run. Keep `pwnstop` on your PATH.
 

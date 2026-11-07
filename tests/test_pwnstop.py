@@ -443,9 +443,15 @@ def test_init_hooks_claude_once_and_leaves_copilot_to_it(tmp_path, capsys):
 
 
 def test_init_global(tmp_path):
-    pwnstop.init(tmp_path, ["--global", "claude", "cursor"])
+    pwnstop.init(tmp_path, ["--global", "claude", "cursor", "copilot"])
     claude = (tmp_path / "home/.claude/settings.json").read_text()
     assert "pwnstop guard --global" in claude and "pwnstop verify --global" in claude
+    assert not (tmp_path / "home/.cursor/hooks.json").exists()  # Cursor runs ~/.claude/settings.json: once is enough
+    assert "pwnstop guard --global" in (tmp_path / "home/.copilot/hooks/pwnstop.json").read_text()  # Copilot doesn't
+
+
+def test_init_global_hooks_cursor_without_claude(tmp_path):
+    pwnstop.init(tmp_path, ["--global", "cursor"])
     cursor = json.loads((tmp_path / "home/.cursor/hooks.json").read_text())
     assert cursor["hooks"]["beforeShellExecution"] == [{"command": "pwnstop guard --global"}]
 

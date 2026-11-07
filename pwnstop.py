@@ -690,6 +690,7 @@ HOOKS = {
 }
 BINARIES = {"claude": ("claude",), "codex": ("codex",), "gemini": ("gemini",), "cursor": ("cursor-agent", "cursor"), "copilot": ("copilot",)}
 IMPORTS_CLAUDE = {"cursor", "copilot"}  # they also run the hooks in a project's .claude/settings*.json
+IMPORTS_CLAUDE_GLOBAL = {"cursor"}  # ...and Cursor those in ~/.claude/settings.json (Copilot doesn't)
 
 
 def global_hooks(agent):
@@ -738,10 +739,10 @@ def init(root, names):
     if unknown:
         print(f"error: unknown agent(s): {', '.join(unknown)}. Known: {', '.join(HOOKS)}, all.")
         return 2
-    claude = "claude" in names or (not everywhere and "pwnstop" in read(root / HOOKS["claude"][0]))
+    claude = "claude" in names or "pwnstop" in read(global_hooks("claude") if everywhere else root / HOOKS["claude"][0])
     print("hooked for every project:" if everywhere else "hooked into:")
     for agent in names:
-        if agent in IMPORTS_CLAUDE and claude and not everywhere:
+        if agent in (IMPORTS_CLAUDE_GLOBAL if everywhere else IMPORTS_CLAUDE) and claude:
             print(f"  {agent:<8} runs the Claude Code hooks too, nothing to add")
             continue
         path = global_hooks(agent) if everywhere else root / HOOKS[agent][0]
