@@ -8,7 +8,9 @@ Usage:
                            hook into your agents for every project, once per machine
   pwnstop check [--base REF] [files]
                            scan the git changes (or everything changed since the branch left REF) and the
-                           packages they add; exit 1 on findings
+                           packages they add; exit 1 on findings. In GitHub Actions they show on the PR's lines
+  pwnstop check FOLDER     scan every line in a folder: audit the skills, rules and hooks you installed
+                           (pwnstop check ~/.claude/skills)
   pwnstop --version        the installed version
   pwnstop guard            hook, before a shell command: block it when it runs code from the internet,
                            reads your keys, sends secrets out, turns off a protection, or installs a
@@ -48,7 +50,7 @@ NEW_DAYS = 30  # younger packages are how typosquats and names an AI made up get
 POPULAR = 5000  # weekly downloads that make a package established: no need to look further
 NET_TIMEOUT = 5
 BIG = 2_000_000  # registry metadata this large means years of releases
-SKIP_DIRS = {"node_modules", "dist", "build", "target", "coverage", "out", "vendor", "__pycache__", "venv", ".venv"}
+SKIP_DIRS = {".git", "node_modules", "dist", "build", "target", "coverage", "out", "vendor", "__pycache__", "venv", ".venv"}
 TEST_NAME = re.compile(r"^test_|_test\.|_spec\.|\.(test|spec)\.|Tests?\.\w+$")
 TEST_DIRS = {"test", "tests", "spec", "__tests__", "e2e", "Tests", "fixtures"}
 DOCS = re.compile(r"\.(?:md|mdx|rst|txt|adoc)$")
@@ -488,9 +490,19 @@ def message(found, session=True):
     out = []
     for path, n, rule, what, fix in found[:20]:
         out += [f"{path}{f':{n}' if n else ''}  {rule}", f"  {what}", f"  → {fix}"]
-    head = "pwnstop: these changes open a security hole. Fix them before finishing:" if session else f"pwnstop: {len(found)} security problem(s) in the changes:"
+    head = "pwnstop: these changes open a security hole. Fix them before finishing:" if session else f"pwnstop: {len(found)} security problem(s):"
     tail = "\n\nA false alarm? Keep it and tell the user why in your final answer: pwnstop flags each one only once." if session else ""
     return head + "\n\n" + "\n".join(out) + tail
+
+
+def annotations(found):
+    """GitHub Actions error annotations, shown on the PR's lines. The text comes from the PR's author: escaped, no
+    newline or `::` in it can start a workflow command of its own."""
+    def esc(s, prop=False):
+        s = s.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        return s.replace(":", "%3A").replace(",", "%2C") if prop else s
+    return "\n".join(f"::error file={esc(p, True)},line={n or 1},title={esc('pwnstop ' + rule, True)}::{esc(f'{p}:{n} {rule}: {what} → {fix}')}"
+                     for p, n, rule, what, fix in found)
 
 
 def install_targets(cmd, cwd=None):
@@ -773,9 +785,16 @@ def main(argv=None):
         root, args, ref = find_root(Path.cwd().resolve()), argv[1:], "HEAD"
         if args[:1] == ["--base"] and len(args) > 1:  # in CI: everything the branch changed since it left <ref>
             ref, args = (git(root, "merge-base", args[1], "HEAD") or args[1]).strip(), args[2:]
-        files = [str(Path(a).resolve()) for a in args] or git_changed(root, ref)
-        found = scan(root, ref if git(root, "rev-parse", "--verify", "-q", ref) else None, files)
-        print(message(found, session=False) if found else f"pwnstop: no security problems in {len(files)} changed file(s).")
+        if len(args) == 1 and Path(args[0]).is_dir():  # an audit of every line in a folder, say the skills you installed
+            top = Path(args[0]).resolve()
+            root, ref, files = top.parent, "", [os.path.join(d, f) for d, _, fs in os.walk(top, followlinks=True) for f in fs]
+        else:
+            files = [str(Path(a).resolve()) for a in args] or git_changed(root, ref)
+        found = scan(root, ref if ref and git(root, "rev-parse", "--verify", "-q", ref) else None, files)
+        if found and os.environ.get("GITHUB_ACTIONS") == "true":
+            print(annotations(found))
+        else:
+            print(message(found, session=False) if found else f"pwnstop: no security problems in {len(files)} file(s).")
         return 1 if found else 0
     print(__doc__.strip())
     return 0 if cmd in ("", "-h", "--help", "help") else 2
