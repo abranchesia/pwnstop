@@ -1,0 +1,182 @@
+import json
+import os
+import subprocess
+import time
+
+import pytest
+
+import pwnstop
+
+KEY = "AKIA" + "Z" * 16  # built at runtime: no key-shaped literal in the repo
+
+
+@pytest.fixture(autouse=True)
+def isolated(tmp_path, monkeypatch):
+    monkeypatch.setattr(pwnstop, "STATE", tmp_path / "state")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(pwnstop, "fetch", lambda url, body=None: (None, None), raising=False)  # offline unless a test says otherwise
+    for env in ("CLAUDE_PROJECT_DIR", "GEMINI_PROJECT_DIR", "CODEX_HOME", "COPILOT_HOME"):
+        monkeypatch.delenv(env, raising=False)
+
+
+def repo(tmp_path, files=None):
+    root = tmp_path / "repo"
+    root.mkdir()
+    for name, text in (files or {"app.py": "x = 1\n"}).items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(text)
+    for args in (["init", "-q"], ["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"]):
+        subprocess.run(["git", *args], cwd=root, check=True)
+    return root
+
+
+def write_later(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    later = time.time() + 5
+    os.utime(path, (later, later))
+
+
+def rule(path, line):
+    hit = pwnstop.match_line(path, line, lambda: line)
+    return hit and hit[0]
+
+
+@pytest.mark.parametrize("path,line,expected", [
+    ("app.py", f'key = "{KEY}"', "secrets"),
+    ("tests/test_api.py", f'key = "{KEY}"', "secrets"),
+    ("app.py", "out = run(cmd)  # nosec", "silences-scanner"),  # pwnstop: ignore
+    ("app.py", "cur.execute(f\"SELECT * FROM users WHERE name = '{name}'\")", "sql-injection"),
+    ("app.py", 'cur.execute("SELECT * FROM users WHERE id = " + uid)', "sql-injection"),
+    ("app.py", 'cur.execute("SELECT * FROM users WHERE id = %s" % uid)', "sql-injection"),
+    ("api.ts", "db.query(`SELECT * FROM users WHERE id = ${id}`)", "sql-injection"),
+    ("main.go", 'db.Query(fmt.Sprintf("SELECT * FROM users WHERE id = %s", id))', "sql-injection"),
+    ("app.py", 'os.system(f"convert {path} out.png")', "shell-injection"),
+    ("app.py", 'subprocess.run("git log " + ref, shell=True)', "shell-injection"),
+    ("api.js", "exec(`ls ${dir}`)", "shell-injection"),
+    ("app.py", "result = eval(expr)", "code-eval"),
+    ("app.js", "const fn = new Function(body)", "code-eval"),
+    ("app.py", 'jwt.decode(token, options={"verify_signature": False})', "jwt-unverified"),
+    ("app.py", "requests.get(url, verify=False)", "tls-off"),
+    ("app.ts", "const agent = new https.Agent({ rejectUnauthorized: false })", "tls-off"),
+    ("app.py", "data = pickle.loads(body)", "unsafe-deserialize"),
+    ("app.py", "cfg = yaml.load(f)", "unsafe-deserialize"),
+    ("app.py", 'app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True)', "cors-any-origin"),
+    ("app.py", "h = hashlib.md5(password.encode()).hexdigest()", "weak-password-hash"),
+    ("app.py", "token = ''.join(random.choices(chars, k=32))", "insecure-random"),
+    ("App.tsx", "<div dangerouslySetInnerHTML={{ __html: comment.body }} />", "xss"),
+    ("page.tsx", "<script dangerouslySetInnerHTML={{ __html: JSON.stringify(ld) }} />", "xss"),
+    ("app.js", 'el.innerHTML = "Hi " + new URLSearchParams(location.search).get("name")', "xss"),
+    ("app.py", "cur.execute(f\"INSERT INTO users (name) VALUES ('{name}')\")", "sql-injection"),
+    ("page.html", "<p>{{ bio|safe }}</p>", "xss"),
+    ("app.py", 'return send_file(os.path.join(UPLOADS, request.args["name"]))', "path-traversal"),
+    ("app.js", "res.sendFile(path.join(__dirname, req.params.file))", "path-traversal"),
+    ("app.py", 'r = requests.get(request.args["url"])', "ssrf"),
+    ("app.js", "const r = await fetch(req.query.url)", "ssrf"),
+    ("app.py", 'app.run(host="0.0.0.0", debug=True)', "debug-on"),
+    (".github/workflows/ci.yml", '      - run: echo "${{ github.event.issue.title }}"', "actions-injection"),
+    ("deploy.sh", "chmod -R 777 /var/www", "world-writable"),
+])
+def test_vulnerable_line_is_flagged(path, line, expected):
+    assert rule(path, line) == expected
+
+
+@pytest.mark.parametrize("path,line", [
+    ("app.py", 'cur.execute("SELECT * FROM users WHERE id = %s", (uid,))'),
+    ("api.ts", "db.query('SELECT * FROM users WHERE id = $1', [id])"),
+    ("api.ts", "await prisma.$queryRaw`SELECT * FROM users WHERE id = ${id}`"),
+    ("app.py", 'logger.info(f"user {uid} logged in")'),
+    ("app.py", 'cur.execute(f"UPDATE t SET s = ? WHERE id IN ({marks})", ids)'),
+    ("api.ts", 'db.prepare(`DELETE FROM t WHERE id IN (${ids.map(() => "?").join()})`)'),
+    ("app.py", 'cur.execute(f"SELECT {cols} FROM t WHERE id = ?", (uid,))'),
+    ("app.js", 'el.innerHTML = items.map((i) => `<li>${i.name}</li>`).join("")'),
+    ("page.tsx", "<script dangerouslySetInnerHTML={{ __html: JSON.stringify(ld).replace(/</g, '\\u003c') }} />"),
+    ("app.py", 'subprocess.run(["git", "log", ref])'),
+    ("app.py", "subprocess.run(cmd, shell=True)"),
+    ("app.py", "model.eval()"),
+    ("app.py", "value = ast.literal_eval(text)"),
+    ("app.py", "requests.get(url, timeout=5)"),
+    ("app.py", "cfg = yaml.safe_load(f)"),
+    ("app.py", "cfg = yaml.load(f, Loader=yaml.SafeLoader)"),
+    ("app.py", 'app.add_middleware(CORSMiddleware, allow_origins=["*"])'),
+    ("app.py", "h = hashlib.sha256(file_bytes).hexdigest()"),
+    ("app.py", "token = secrets.token_urlsafe(32)"),
+    ("app.py", "delay = random.uniform(0.1, 0.5)"),
+    ("app.js", 'el.innerHTML = "";'),
+    ("app.js", "el.textContent = comment.body"),
+    ("App.tsx", "<div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(html) }} />"),
+    ("app.py", 'requests.get("https://api.example.com/items", params=request.args)'),
+    ("app.py", 'app.run(debug=os.environ.get("DEBUG") == "1")'),
+    (".github/workflows/ci.yml", "          TITLE: ${{ github.event.issue.title }}"),
+    (".github/workflows/ci.yml", '      - run: echo "$TITLE"'),
+    ("deploy.sh", "chmod 755 bin/run"),
+    ("README.md", "requests.get(url, verify=False)"),
+    ("tests/test_api.py", "requests.get(url, verify=False)"),
+])
+def test_safe_line_passes(path, line):
+    assert rule(path, line) is None
+
+
+def test_secret_is_cut_short():
+    _, what, _ = pwnstop.match_line("app.py", f'key = "{KEY}"')
+    assert what == KEY[:10] + "…"
+
+
+def test_check_flags_a_change_and_obeys_ignore(tmp_path, monkeypatch, capsys):
+    root = repo(tmp_path)
+    monkeypatch.chdir(root)
+    (root / "app.py").write_text("x = 1\nrequests.get(url, verify=False)\n")
+    assert pwnstop.main(["check"]) == 1
+    assert "app.py:2  tls-off" in capsys.readouterr().out
+    (root / "app.py").write_text("x = 1\nrequests.get(url, verify=False)  # pwnstop: ignore\n")
+    assert pwnstop.main(["check"]) == 0
+
+
+def test_env_file_git_would_commit(tmp_path, monkeypatch, capsys):
+    root = repo(tmp_path)
+    monkeypatch.chdir(root)
+    (root / ".env").write_text("API_KEY=abc\n")
+    (root / ".env.example").write_text("API_KEY=\n")
+    (root / ".env.production.example").write_text("API_KEY=\n")
+    assert pwnstop.main(["check"]) == 1
+    out = capsys.readouterr().out
+    assert [ln for ln in out.splitlines() if "env-file" in ln] == [".env  env-file"]
+    (root / ".gitignore").write_text(".env\n")
+    assert pwnstop.main(["check"]) == 0
+
+
+def test_stop_blocks_once_then_lets_the_agent_finish(tmp_path, capsys):
+    root = repo(tmp_path)
+    data = {"session_id": "s1", "cwd": str(root)}
+    assert pwnstop.hook("start", data) == 0
+    write_later(root / "app.py", "x = 1\nrequests.get(url, verify=False)\n")
+    pwnstop.hook("verify", data)
+    out = json.loads(capsys.readouterr().out)
+    assert out["decision"] == "block" and "tls-off" in out["reason"]
+    pwnstop.hook("verify", data)
+    assert capsys.readouterr().out == ""  # told once: kept on purpose, the agent explains it
+
+
+def test_ignore_added_by_the_agent_is_flagged(tmp_path, capsys):
+    root = repo(tmp_path)
+    data = {"session_id": "s2", "cwd": str(root)}
+    pwnstop.hook("start", data)
+    write_later(root / "app.py", "x = 1\nrequests.get(url, verify=False)  # pwnstop: ignore\n")
+    pwnstop.hook("verify", data)
+    assert "silences pwnstop" in json.loads(capsys.readouterr().out)["reason"]
+
+
+def test_clean_session_passes(tmp_path, capsys):
+    root = repo(tmp_path)
+    data = {"session_id": "s3", "cwd": str(root)}
+    pwnstop.hook("start", data)
+    write_later(root / "app.py", "x = 2\n")
+    assert pwnstop.hook("verify", data) == 0 and capsys.readouterr().out == ""
+
+
+def test_a_crash_never_blocks_the_agent(monkeypatch, capsys):
+    def boom(*a, **k):
+        raise RuntimeError("bug")
+    monkeypatch.setattr(pwnstop, "hook", boom)
+    monkeypatch.setattr("sys.stdin", __import__("io").StringIO("{}"))
+    assert pwnstop.main(["verify"]) == 0
