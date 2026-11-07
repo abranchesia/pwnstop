@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pwnstop"
+version = "0.1.0"
+description = "Your AI coding agent can't run an attacker's command or ship the hole they're looking for."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+keywords = ["security", "claude-code", "cursor", "codex", "gemini-cli", "copilot", "ai-agents", "coding-agent", "hooks", "prompt-injection", "slopsquatting", "typosquatting", "sast", "secrets"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+    "Topic :: Software Development :: Quality Assurance",
+]
+
+[project.urls]
+Homepage = "https://github.com/abranchesia/pwnstop"
+Issues = "https://github.com/abranchesia/pwnstop/issues"
+
+[project.scripts]
+pwnstop = "pwnstop:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[tool.hatch.build.targets.sdist]
+exclude = [".github"]
