@@ -9,7 +9,7 @@ description = "Your AI coding agent can't run an attacker's command or ship the 
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.9"
-keywords = ["security", "claude-code", "cursor", "codex", "gemini-cli", "copilot", "ai-agents", "coding-agent", "hooks", "prompt-injection", "slopsquatting", "typosquatting", "sast", "secrets"]
+keywords = ["security", "claude-code", "cursor", "codex", "gemini-cli", "copilot", "ai-agents", "coding-agent", "hooks", "prompt-injection", "slopsquatting", "typosquatting", "mcp", "agent-skills", "sast", "secrets"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",

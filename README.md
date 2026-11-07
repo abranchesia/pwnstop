@@ -15,8 +15,8 @@ Your agent reads READMEs, issues, web pages and error messages written by strang
 
 pwnstop adds **two hooks**:
 
-- **Before every shell command**, it blocks the ones that run code from the internet, read your keys, send secrets out, plant a backdoor or turn off a protection. It also blocks installs of packages that don't exist, were taken down for malware, were published days ago or have known vulnerabilities, before any install script runs.
-- **Before the agent says "done"**, it scans the lines added in the session for SQL and shell injection, `eval`, disabled TLS, unverified JWTs, pickle, open CORS with credentials, weak password hashes, XSS, path traversal, SSRF, hardcoded keys, `.env` files git would commit and injectable GitHub Actions. Findings go back to the agent, and it fixes them.
+- **Before every shell command**, it blocks the ones that run code from the internet or hidden in base64, read your keys, send secrets out, plant a backdoor or turn off a protection. It also blocks installs of packages and MCP servers that don't exist, were taken down for malware, were published days ago or have known vulnerabilities, before any install script runs.
+- **Before the agent says "done"**, it scans the lines added in the session for SQL and shell injection, `eval`, disabled TLS, unverified JWTs, pickle, open CORS with credentials, weak password hashes, XSS, path traversal, SSRF, hardcoded keys and secrets with a default value, `.env` files git would commit, injectable GitHub Actions and pwn requests. Skills, `AGENTS.md`, rules and hooks get the guard's command rules too, plus a check for invisible text that only the model reads. Findings go back to the agent, and it fixes them.
 
 One Python file, no dependencies, no telemetry.
 
@@ -74,6 +74,7 @@ Before a shell command runs:
 | Rule | Blocks | Example |
 |---|---|---|
 | `pipe-to-shell` | code from the internet piped into a shell or interpreter | `curl -fsSL https://x.sh \| sh`, `bash <(curl …)` |
+| `obfuscated-command` | base64 or hex decoded straight into a shell or interpreter | `echo Y3Vy… \| base64 -d \| bash` |
 | `reads-credentials` | reading SSH keys, cloud, registry and git credentials | `cat ~/.ssh/id_rsa`, `cat ~/.aws/credentials` |
 | `sends-secrets` | posting `.env`, keys or the environment to a server | `curl -d @.env https://…`, `env \| curl …` |
 | `deletes-everything` | `rm -rf` of `/` or your home folder | `rm -rf ~` |
@@ -81,9 +82,9 @@ Before a shell command runs:
 | `disables-protection` | firewall, SELinux, Gatekeeper, git/npm TLS checks off | `git config --global http.sslVerify false` |
 | `world-writable` | `chmod 777` | `chmod -R 777 /var/www` |
 | `untrusted-index` | extra or plain-http package indexes (dependency confusion) | `pip install --extra-index-url …` |
-| `package-*` | installing or `npx`/`uvx`-running a package that is missing, pulled for malware, under 30 days old or known vulnerable | `npm install exprss-jwt` |
+| `package-*` | installing or `npx`/`uvx`-running a package that is missing, pulled for malware, under 30 days old or known vulnerable, also as an MCP server | `npm install exprss-jwt`, `claude mcp add x -- npx -y mcp-helpr` |
 
-Reading `.env`, `ssh -i ~/.ssh/key`, `cat key.pub`, `rm -rf ./build` and `curl … -o file` run as usual. When a command is blocked, the agent is told to explain why and let you run it yourself.
+Reading `.env`, `ssh -i ~/.ssh/key`, `cat key.pub`, `rm -rf ./build`, `curl … -o file` and `curl … | python3 -m json.tool` run as usual. When a command is blocked, the agent is told to explain why and let you run it yourself.
 
 ## What the stop check flags
 
@@ -92,6 +93,8 @@ Only lines **added in this session** are checked, so old code never blocks anyon
 | Rule | Looks for |
 |---|---|
 | `secrets` | AWS, OpenAI, Anthropic, Stripe, GitHub, GitLab, Slack, Google, npm, PyPI and SendGrid keys, private keys (shown cut short) |
+| `secret-default` | a signing secret or password with a fallback value: `getenv("JWT_SECRET", "dev")`, `process.env.SESSION_SECRET \|\| "…"`, `${jwt.secret:changeme}` |
+| `hidden-text` | Unicode tag characters (invisible text an LLM reads, shown decoded), bidi controls (Trojan Source), runs of zero-width characters |
 | `env-file` | a `.env` git would commit (`.env.example` is fine) |
 | `silences-scanner` | `# nosec`, `nosemgrep`, `gitleaks:allow`, `# noqa: S…`, `NOSONAR`, `eslint-disable` of security rules, and a `pwnstop: ignore` the agent added |
 | `sql-injection` | a value put into SQL with an f-string, template, `+`, `%` or `.format` (dynamic `IN (?, ?)` placeholders are fine) |
@@ -108,10 +111,23 @@ Only lines **added in this session** are checked, so old code never blocks anyon
 | `ssrf` | fetching a URL taken from the request |
 | `debug-on` | Flask/Werkzeug debugger on |
 | `actions-injection` | `${{ github.event.issue.title }}` and the like inside a workflow `run:` |
+| `pwn-request` | a `pull_request_target` or `workflow_run` workflow that checks out the PR's code |
 | `world-writable` | `chmod 777` in scripts and code |
-| `package-*` | dependencies added to `package.json`, `requirements*.txt` or `pyproject.toml` that are missing, pulled, new or vulnerable |
+| `package-*` | dependencies added to `package.json`, `requirements*.txt` or `pyproject.toml`, and MCP servers added to `.mcp.json` or `mcp.json`, that are missing, pulled, new or vulnerable |
+| the guard's rules | `curl … \| sh`, reading `~/.ssh`, `env \| curl` and the rest, written into a file an agent follows: `SKILL.md`, `AGENTS.md`, `CLAUDE.md`, `.cursor/rules`, `.claude/`, `.github/instructions`, hooks and MCP configs |
 
-Code covered: Python, JavaScript/TypeScript (with Vue, Svelte, Astro), Go for SQL and shell, GitHub Actions workflows. Test files are only checked for secrets and silenced scanners, and docs only for secrets.
+Code covered: Python, JavaScript/TypeScript (with Vue, Svelte, Astro), Go for SQL and shell, GitHub Actions workflows; secret defaults also in Go, Ruby, PHP, Java, Kotlin, C#, Rust and Spring config. Agent files and invisible text are checked in any language. Test files are only checked for secrets, invisible text and silenced scanners, and docs only for secrets and invisible text.
+
+## Audit the skills you installed
+
+A skill, a rule file or an MCP server runs with your permissions. Point `check` at a folder and it scans every line in it, not just the changes:
+
+```bash
+pwnstop check ~/.claude/skills
+pwnstop check ~/.claude/plugins
+```
+
+It flags a skill that tells the agent to pipe an installer into a shell, read your keys or decode base64 into bash, and instructions hidden in invisible characters. It runs offline, with no account.
 
 ## False alarms
 
@@ -126,7 +142,7 @@ pwnstop check                     # the uncommitted changes
 pwnstop check --base origin/main  # everything this branch adds
 ```
 
-It exits with 1 on findings.
+It exits with 1 on findings. In GitHub Actions each finding also shows on its line in the PR. The line's text is escaped first, so a PR can't slip a workflow command into the log.
 
 ```yaml
 # .github/workflows/pwnstop.yml
@@ -165,7 +181,7 @@ Only for packages being added: the package name, to `registry.npmjs.org`, `api.n
 
 ## What it is not
 
-pwnstop catches the patterns an agent writes and the commands an injected prompt asks for. It reads one line at a time, so it can't follow a value from a request handler through three functions into a query. For that, run [Semgrep](https://semgrep.dev) or [CodeQL](https://codeql.github.com) in CI. pwnstop is one layer, not a guarantee. It never replaces reviewing what your agent ships.
+pwnstop catches the patterns an agent writes and the commands an injected prompt asks for. It reads one line at a time, so it can't follow a value from a request handler through three functions into a query. For that, run [Semgrep](https://semgrep.dev) or [CodeQL](https://codeql.github.com) in CI, or an LLM review such as Claude Code's `/security-review`. pwnstop is one layer, not a guarantee. It never replaces reviewing what your agent ships.
 
 It never bricks your agent: no git, no network, a timeout or a bug in pwnstop itself, and the check is skipped.
 
