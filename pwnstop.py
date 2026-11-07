@@ -68,6 +68,11 @@ USER_TEXT = r"(?:\blocation\.(?:hash|search|href)|URLSearchParams|searchParams|\
 HASH = r"(?:\b(?:md5|sha1|sha224|sha256|sha384|sha512)\(|createHash\(\s*[\"'](?:md5|sha1|sha256|sha512)[\"'])"
 RANDOM = r"(?:\brandom\.(?:random|randint|randrange|choice|choices|getrandbits|sample)\(|\bMath\.random\(\))"
 SENSITIVE = r"(?:token|secret|password|passwd|otp|nonce|salt|api_?key|session|reset)"
+# A secret the app itself owns (signs sessions with, logs in with), by the end of its variable name. API keys of other
+# services are left out: a made-up default for those fails at the other end.
+OWN_SECRET = r"[\w.-]*?(?:secret|password|passwd|(?:secret|signing|encryption|private|app)[_.-]?key)(?![\w.-])"
+LITERAL = r"""["'`][^"'`]+["'`]"""  # a string that isn't empty
+ACTIONS = r"(?:^|/)\.github/workflows/[^/]+\.ya?ml$|(?:^|/)action\.ya?ml$"
 SHELL_FIX = 'pass the arguments as a list, without a shell: subprocess.run(["git", "log", ref]) / execFile("git", ["log", ref])'
 EVAL_FIX = "never run text as code: parse it (json.loads, ast.literal_eval, JSON.parse) or map it to functions you wrote"
 XSS_FIX = ("escape it, or sanitize it (DOMPurify.sanitize, bleach.clean) first: text a user typed would run as script in other users' browsers."
@@ -100,6 +105,12 @@ RULES = [(name, re.compile(where), re.compile(rx), fix, re.compile(needs) if nee
      r"""["']verify_signature["']\s*:\s*False|["']verify_exp["']\s*:\s*False|\balgorithms\s*[=:]\s*\[\s*["']none["']|\bignoreExpiration\s*:\s*true"""
      r"""|\bjwt\.decode\([^)]*\bverify\s*=\s*False""",
      'check the signature and the expiry: jwt.decode(token, key, algorithms=["HS256"]) / jwt.verify(token, key). Without it anyone can write their own token', None),
+    ("secret-default", CODE[:-2] + r"|ya?ml|properties)$",
+     rf"""(?i)\b(?:getenv|get_?env|environ\.get|setdefault|env\.fetch|env|getOrDefault|config)\(\s*["']{OWN_SECRET}["']\s*,\s*(?:default\s*=\s*)?{LITERAL}"""
+     rf"""|\b(?:env|environ|getenv)\b(?:\.get)?[.\[(]\s*["']?{OWN_SECRET}["']?\s*[\])]*\s*(?:\|\||\?\?|\?:|\bor\b)\s*{LITERAL}"""
+     rf"""|\$\{{{OWN_SECRET}:(?![\d\s?+-])[^}}]+\}}""",
+     'fail closed: read it with no default (os.environ["JWT_SECRET"], or throw when process.env.JWT_SECRET is missing). A deploy that forgets'
+     " the variable runs with this one, and anyone who reads the code can sign sessions or log in", None),
     ("tls-off", "",
      r"""\bverify\s*=\s*False\b|\brejectUnauthorized\s*:\s*false\b|NODE_TLS_REJECT_UNAUTHORIZED["']?\s*[=:]\s*["']?0\b|\bInsecureSkipVerify\s*:\s*true\b"""
      r"""|\b_create_unverified_context\b|\bcheck_hostname\s*=\s*False\b|\bCERT_NONE\b|\bstrict-ssl\s*[=:]?\s*false\b|\bsslVerify\s*=?\s*false\b""",
@@ -129,11 +140,17 @@ RULES = [(name, re.compile(where), re.compile(rx), fix, re.compile(needs) if nee
      "don't fetch an address the user picked: they'll point it at your internal network or the cloud metadata (169.254.169.254). Allow-list the hosts", None),
     ("debug-on", PY, r"""\.run\([^)]*\bdebug\s*=\s*True|\bFLASK_DEBUG\s*=\s*["']?1|\buse_debugger\s*=\s*True""",
      "turn the debugger off outside your machine: Werkzeug's debugger runs any Python a visitor types. Read it from an env var", None),
-    ("actions-injection", r"(?:^|/)\.github/workflows/[^/]+\.ya?ml$|(?:^|/)action\.ya?ml$",
+    ("actions-injection", ACTIONS,
      r"""^(?!\s*(?:-\s+)?(?!run:|script:)[\w-]+:\s*["']?\$\{\{).*\$\{\{\s*(?:github\.event\.(?:issue\.(?:title|body)|pull_request\.(?:title|body|head\.ref|head\.label)"""
      r"""|comment\.body|review\.body|review_comment\.body|discussion\.(?:title|body)|head_commit\.(?:message|author\.(?:name|email))|commits\b[^}]*\.(?:message|author)"""
      r"""|pages\b[^}]*\.page_name|workflow_run\.(?:head_branch|display_title))|github\.head_ref)\b""",
      'pass it through env: and quote it (env: TITLE: ${{ github.event.issue.title }}, then "$TITLE"): whoever opens an issue or PR writes this text, and here it runs as shell', None),
+    ("pwn-request", ACTIONS,
+     r"""\bref:\s*["']?(?:\$\{\{\s*(?:github\.event\.pull_request\.head\.(?:sha|ref)|github\.head_ref|github\.event\.workflow_run\.head_(?:sha|branch))|refs/pull/)"""
+     r"""|\bgh\s+pr\s+checkout\b""",
+     "this trigger runs with your secrets and a write token, and here it checks out the PR author's code: their build scripts, tests"
+     " and any AI agent reading the files run with both. Use on: pull_request, or don't build or hand an agent what you check out",
+     r"\bpull_request_target\b|\bworkflow_run\b"),
     ("world-writable", "", r"""\bchmod\s+(?:-\w+\s+)*(?:0?777|a\+w|o\+w|a\+rwx|ugo\+rwx)\b|\bchmod(?:Sync)?\([^)]*\b0o?777\b""",
      "let only the owner write (755 for folders, 644 for files): 777 lets every user and process on the machine change it", None),
 ]]

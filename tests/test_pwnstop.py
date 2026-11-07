@@ -77,6 +77,13 @@ def rule(path, line):
     ("app.py", 'app.run(host="0.0.0.0", debug=True)', "debug-on"),
     (".github/workflows/ci.yml", '      - run: echo "${{ github.event.issue.title }}"', "actions-injection"),
     ("deploy.sh", "chmod -R 777 /var/www", "world-writable"),
+    ("settings.py", 'SECRET_KEY = os.environ.get("SECRET_KEY", "django-insecure-dev")', "secret-default"),
+    ("app.py", 'secret = os.getenv("JWT_SECRET") or "dev"', "secret-default"),
+    ("auth.ts", 'const secret = process.env.SESSION_SECRET || "keyboard cat"', "secret-default"),
+    ("config/database.php", "'password' => env('DB_PASSWORD', 'secret'),", "secret-default"),
+    ("main.go", 'secret := getEnv("JWT_SECRET", "secret")', "secret-default"),
+    ("Auth.java", '@Value("${jwt.secret:mySecretKey}")', "secret-default"),
+    ("application.yml", "  secret: ${JWT_SECRET:changeme}", "secret-default"),
 ])
 def test_vulnerable_line_is_flagged(path, line, expected):
     assert rule(path, line) == expected
@@ -113,6 +120,13 @@ def test_vulnerable_line_is_flagged(path, line, expected):
     ("deploy.sh", "chmod 755 bin/run"),
     ("README.md", "requests.get(url, verify=False)"),
     ("tests/test_api.py", "requests.get(url, verify=False)"),
+    ("app.py", 'token = os.getenv("GITHUB_TOKEN", "")'),
+    ("app.py", 'key = os.getenv("OPENAI_API_KEY", "not-set")'),
+    ("app.py", 'n = int(os.getenv("PASSWORD_MIN_LENGTH", "8"))'),
+    ("app.py", 'cwd = os.getenv("PWD", "/")'),
+    ("auth.ts", 'const secret = process.env.JWT_SECRET ?? ""'),
+    ("docker-compose.yml", "      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}"),
+    ("tests/test_auth.py", 'os.environ.setdefault("SECRET_KEY", "test")'),
 ])
 def test_safe_line_passes(path, line):
     assert rule(path, line) is None
@@ -121,6 +135,12 @@ def test_safe_line_passes(path, line):
 def test_secret_is_cut_short():
     _, what, _ = pwnstop.match_line("app.py", f'key = "{KEY}"')
     assert what == KEY[:10] + "…"
+
+
+def test_pwn_request_needs_the_privileged_trigger():
+    path, line = ".github/workflows/ci.yml", "          ref: ${{ github.event.pull_request.head.sha }}"
+    assert pwnstop.match_line(path, line, lambda: "on: pull_request_target\n")[0] == "pwn-request"
+    assert pwnstop.match_line(path, line, lambda: "on: pull_request\n") is None
 
 
 @pytest.mark.parametrize("cmd,expected", [
