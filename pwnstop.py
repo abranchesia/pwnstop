@@ -55,6 +55,16 @@ DOCS = re.compile(r"\.(?:md|mdx|rst|txt|adoc)$")
 LOCKS = re.compile(r"(?:^|/)(?:package-lock\.json|yarn\.lock|pnpm-lock\.yaml|poetry\.lock|uv\.lock|Cargo\.lock|Gemfile\.lock|composer\.lock|go\.sum)$|\.min\.js$")
 ENV_FILE = re.compile(r"(?:^|/)\.env(?:\.(?!.*(?:example|sample|template|dist|defaults?)$)[\w.-]+)?$")
 ENV_FIX = "git would commit it with your secrets: add it to .gitignore and commit only a .env.example without values"
+# Files an agent reads as instructions or runs on its own: skills, rules, commands, hooks, MCP configs. A command written
+# here runs later, in your session or a teammate's, so the guard's command rules apply to their lines too.
+AGENT_FILES = re.compile(r"(?:^|/)(?:\.(?:claude|codex|gemini|cursor|windsurf|agents|vscode|claude-plugin)/|\.github/(?:hooks|instructions|prompts)/"
+                         r"|skills/[\w.-]+/|hooks/hooks\.json$|\.github/copilot-instructions\.md$|(?:AGENTS|CLAUDE|GEMINI|SKILL)(?:\.local)?\.md$"
+                         r"|\.(?:cursorrules|windsurfrules|clinerules)$|\.?mcp\.json$)")
+# Characters nobody sees in a diff: Unicode tags (they spell out text an LLM reads), bidi controls (Trojan Source) and
+# runs of zero-width ones (text encoded in them). One zero-width character is typography, a CSV's BOM or an escaped
+# fence. The tags in the flags of England, Scotland and Wales follow a 🏴 and are left alone.
+TAGS = r"[\U000E0000-\U000E007F]"
+HIDDEN = r"[\u202a-\u202e\u2066-\u2069]|[\u200b-\u200d\u2060-\u2064\ufeff]{3,}|(?<![\U0001F3F4\U000E0061-\U000E007A])" + TAGS
 
 PY, JS = r"\.py$", r"\.(?:[cm]?[jt]sx?|vue|svelte|astro)$"
 PYJS = r"\.(?:py|[cm]?[jt]sx?|vue|svelte|astro)$"
@@ -85,6 +95,9 @@ RULES = [(name, re.compile(where), re.compile(rx), fix, re.compile(needs) if nee
      r"|\bglpat-[\w-]{20,}|\bxox[abpr]-[0-9A-Za-z-]{10,}|\bAIza[\w-]{35}|\bnpm_[0-9A-Za-z]{36}\b|\bpypi-AgEIcHlwaS5vcmc[\w-]{50,}"
      r"|\bSG\.[\w-]{22}\.[\w-]{43}\b|hooks\.slack\.com/services/T\w+/B\w+/\w+|-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----",
      "read it from an environment variable, and revoke the key if this was ever pushed", None),
+    ("hidden-text", "", HIDDEN,
+     "delete the invisible characters, or write them as escapes (\\u202e) if the code needs them: a reviewer can't see them, an agent"
+     " reads them as instructions, and bidi controls make code run differently from how it reads", None),
     ("silences-scanner", "",
      r"#\s*nosec\b|\bnosemgrep\b|\bgitleaks:allow\b|\bpragma:\s*allowlist\s+secret\b|#\s*noqa:\s*S\d|\bNOSONAR\b|\btrufflehog:ignore\b"
      r"|\bcheckov:skip\b|\btfsec:ignore\b|eslint-disable.*(?:\bsecurity/|\bno-eval\b|\bno-implied-eval\b|react/no-danger)",  # pwnstop: ignore (the rule itself)
@@ -407,16 +420,27 @@ def package_findings(pkgs):
     return found
 
 
+def reveal(text):
+    """`text` with its invisible characters shown: Unicode tags as the text they spell, the others as [U+XXXX]."""
+    text = re.sub(TAGS + "+", lambda m: "[hidden: " + "".join(chr(ord(c) - 0xE0000) for c in m[0] if 0xE0020 <= ord(c) < 0xE007F) + "]", text)
+    return re.sub(r"[\u202a-\u202e\u2066-\u2069\u200b-\u200d\u2060-\u2064\ufeff]", lambda m: f"[U+{ord(m[0]):04X}]", text)
+
+
 def match_line(path, text, whole=lambda: ""):
     """(rule, what, fix) for the first rule an added line breaks, or None. `whole()` gives the file's text, for the
-    rules that need something else in it. Docs only get the secrets check, tests the secrets and silencers ones."""
+    rules that need something else in it. Docs only get the secrets and hidden text checks, tests those and the
+    silencers one. Agent files (skills, rules, hooks) also get the guard's command rules."""
     docs, test = DOCS.search(path), is_test(path)
     for name, where, rx, fix, needs in RULES:
-        if (name != "secrets" and (docs or (test and name != "silences-scanner"))) or not where.search(path):
+        if (name not in ("secrets", "hidden-text") and (docs or (test and name != "silences-scanner"))) or not where.search(path):
             continue
         m = rx.search(text)
         if m and (not needs or needs.search(whole())):
-            return name, m.group(0)[:10] + "…" if name == "secrets" else text.strip()[:100], fix
+            return name, m.group(0)[:10] + "…" if name == "secrets" else reveal(text[m.start():] if name == "hidden-text" else text).strip()[:100], fix
+    if AGENT_FILES.search(path):
+        for name, rx, why in COMMANDS:
+            if rx.search(text):
+                return name, reveal(text).strip()[:100], "an agent that reads this file runs it, in your session or a teammate's: " + why
     return None
 
 
@@ -431,7 +455,7 @@ def scan(root, ref, files, session=False):
         if ENV_FILE.search(path):
             found.append((path, 0, "env-file", Path(path).name, ENV_FIX))
         for n, text in lines:
-            if len(text) > 1000:  # minified or generated
+            if len(text) > 1000 and not (DOCS.search(path) or AGENT_FILES.search(path)):  # minified or generated code
                 continue
             if IGNORE in text:
                 if session:
