@@ -60,6 +60,7 @@ ENV_FIX = "git would commit it with your secrets: add it to .gitignore and commi
 AGENT_FILES = re.compile(r"(?:^|/)(?:\.(?:claude|codex|gemini|cursor|windsurf|agents|vscode|claude-plugin)/|\.github/(?:hooks|instructions|prompts)/"
                          r"|skills/[\w.-]+/|hooks/hooks\.json$|\.github/copilot-instructions\.md$|(?:AGENTS|CLAUDE|GEMINI|SKILL)(?:\.local)?\.md$"
                          r"|\.(?:cursorrules|windsurfrules|clinerules)$|\.?mcp\.json$)")
+MCP_CONFIG = re.compile(r"(?:^|/)\.?mcp\.json$")
 # Characters nobody sees in a diff: Unicode tags (they spell out text an LLM reads), bidi controls (Trojan Source) and
 # runs of zero-width ones (text encoded in them). One zero-width character is typography, a CSV's BOM or an escaped
 # fence. The tags in the flags of England, Scotland and Wales follow a 🏴 and are left alone.
@@ -213,6 +214,7 @@ PACKAGE_FIX = {
     "package-vulnerable": "use a version without these advisories",
 }
 NPM_TOOLS, PY_TOOLS = {"npm", "pnpm", "yarn", "bun"}, {"pip", "pip3", "uv", "poetry", "pipx", "pdm", "rye"}
+RUNNERS = {"npx", "bunx", "pnpx", "uvx", "pipx"}
 TAKES_VALUE = {"-r", "--requirement", "-c", "--constraint", "-e", "--editable", "-i", "--index-url", "--extra-index-url", "-f", "--find-links",
                "-t", "--target", "--prefix", "--registry", "-w", "--workspace", "--filter", "--python", "--group", "--optional", "--cwd", "-C"}
 
@@ -336,11 +338,26 @@ def deps_of(file, text):
     return dict(filter(None, map(req, text.splitlines())))
 
 
+def mcp_servers(text, root):
+    """[(ecosystem, name, exact version or None)] for the MCP servers a config starts from a registry (npx, uvx)."""
+    try:
+        d = json.loads(text or "{}")
+    except ValueError:
+        return []
+    servers = d.get("mcpServers") or d.get("servers") if isinstance(d, dict) else None
+    return [t for s in (servers.values() if isinstance(servers, dict) else []) if isinstance(s, dict) and isinstance(s.get("command"), str)
+            for t in install_targets(shlex.join([s["command"], *map(str, s.get("args") or [])]), root)]
+
+
 def new_packages(root, ref, rels):
     """[(manifest, ecosystem, name, exact version or None)] for the packages the manifests gained since `ref`."""
     out = []
     for rel in rels:
         file = Path(rel).name
+        if MCP_CONFIG.search(rel):  # the agent starts these itself, never through a shell command the guard sees
+            old = mcp_servers(git(root, "show", f"{ref}:./{rel}"), root)
+            out += [(rel, *p) for p in mcp_servers(read(root / rel), root) if p not in old]
+            continue
         if not (file in ("package.json", "pyproject.toml") or re.fullmatch(r"requirements[\w.-]*\.txt", file)) or is_test(rel):
             continue
         eco = "npm" if file == "package.json" else "PyPI"
@@ -489,6 +506,8 @@ def install_targets(cmd, cwd=None):
             w = w[1:]
         if len(w) > 2 and re.fullmatch(r"python[\d.]*", Path(w[0]).name) and w[1:3] == ["-m", "pip"]:
             w = ["pip", *w[3:]]
+        if w and Path(w[0]).name in ("claude", "codex", "gemini") and w[1:2] == ["mcp"]:  # `claude mcp add x -- npx -y pkg`: a server the agent will start
+            w = next((w[i:] for i, a in enumerate(w) if a in RUNNERS), [])
         if not w:
             continue
         tool, args = Path(w[0]).name, w[1:]

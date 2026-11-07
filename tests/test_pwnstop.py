@@ -225,6 +225,9 @@ def test_ordinary_command_runs(cmd):
     ("cd web && pnpm add zod", [("npm", "zod", None)]),
     ("npm install ./local-pkg git+https://github.com/a/b", []),
     ("yarn dlx create-x", [("npm", "create-x", None)]),
+    ("claude mcp add fs -s user -- npx -y @acme/mcp-fs /tmp", [("npm", "@acme/mcp-fs", None)]),
+    ("gemini mcp add docs uvx mcp-docs", [("PyPI", "mcp-docs", None)]),
+    ("claude mcp list", []),
 ])
 def test_install_targets(cmd, expected, tmp_path):
     assert pwnstop.install_targets(cmd, tmp_path) == expected
@@ -296,6 +299,16 @@ def test_new_dependencies_in_manifests(tmp_path):
     assert pwnstop.new_packages(root, "HEAD", ["package.json", "requirements.txt"]) == [
         ("package.json", "npm", "exprss-jwt", None), ("requirements.txt", "PyPI", "requests", "2.31.0")]
     assert ref
+
+
+def test_new_mcp_servers_are_package_checked(tmp_path):
+    old = {"mcpServers": {"fs": {"command": "npx", "args": ["-y", "@acme/mcp-fs"]}}}
+    root = repo(tmp_path, {".mcp.json": json.dumps(old)})
+    new = {"mcpServers": {**old["mcpServers"], "evil": {"command": "npx", "args": ["-y", "mcp-helpr@1.0.0"]},
+                          "git": {"command": "uvx", "args": ["mcp-server-git"]}, "local": {"command": "node", "args": ["server.js"]}}}
+    (root / ".mcp.json").write_text(json.dumps(new))
+    assert pwnstop.new_packages(root, "HEAD", [".mcp.json"]) == [
+        (".mcp.json", "npm", "mcp-helpr", "1.0.0"), (".mcp.json", "PyPI", "mcp-server-git", None)]
 
 
 def test_check_flags_a_change_and_obeys_ignore(tmp_path, monkeypatch, capsys):
