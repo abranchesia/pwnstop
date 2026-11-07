@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pwnstop"
-version = "0.1.2"
+version = "0.1.3"
 description = "Your AI coding agent can't run an attacker's command or ship the hole they're looking for."
 readme = "README.md"
 license = "MIT"

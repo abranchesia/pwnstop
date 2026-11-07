@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-07
+
 ### Fixed
 
 - The guard no longer reads a redirection as a package: `uv tool install ruff 2>&1 | tail` was blocked as "2 doesn't exist on PyPI".
@@ -34,7 +36,8 @@ First release.
 - `pwnstop check FOLDER` audits every line of the skills, rules and plugins you installed.
 - `pwnstop init [--global]` for Claude Code, Codex CLI, Cursor, Gemini CLI and GitHub Copilot CLI.
 
-[Unreleased]: https://github.com/abranchesia/pwnstop/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/abranchesia/pwnstop/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/abranchesia/pwnstop/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/abranchesia/pwnstop/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/abranchesia/pwnstop/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/abranchesia/pwnstop/releases/tag/v0.1.0
