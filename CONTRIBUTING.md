@@ -2,6 +2,8 @@
 
 Thanks for helping. pwnstop is small on purpose: one file (`pwnstop.py`), Python 3.9+, standard library only. Changes that keep it that way are the easiest to merge.
 
+Taking part means following the [Code of Conduct](CODE_OF_CONDUCT.md).
+
 ## Set up
 
 ```bash
