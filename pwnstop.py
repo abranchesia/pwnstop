@@ -2,6 +2,10 @@
 """pwnstop: your coding agent can't open the hole an attacker walks through.
 
 Usage:
+  pwnstop init [agents]    hook into your agents in this project (default: the agents found here; or
+                           name them, or "all")
+  pwnstop init --global [agents]
+                           hook into your agents for every project, once per machine
   pwnstop check [--base REF] [files]
                            scan the git changes (or everything changed since the branch left REF) and the
                            packages they add; exit 1 on findings
@@ -21,6 +25,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -546,12 +551,14 @@ def mark(sid, roots):
     (STATE / f"{sid}.refs").write_text(json.dumps({str(r): snapshot(r) for r in roots}))
 
 
-def hook(event, data):
-    """Answer an agent's hook event, in its own format."""
+def hook(event, data, everywhere=False):
+    """`everywhere`: called from your user config (init --global), which leaves alone the projects hooked on their own."""
     agent = agent_of(data)
     env_root = os.environ.get("CLAUDE_PROJECT_DIR") or os.environ.get("GEMINI_PROJECT_DIR")
     paths = data.get("workspace_roots") or [env_root or data.get("cwd") or os.getcwd()]
     roots = sorted({find_root(Path(p).resolve()) for p in paths})
+    if everywhere:
+        roots = [r for r in roots if not hooked_here(r, agent)]
     if event == "guard":
         cmd = command_of(data)
         hits = check_command(cmd, data.get("cwd")) if cmd and roots else []
@@ -582,6 +589,93 @@ def hook(event, data):
     return reply(agent, notes=[f"kept after being told: {p}{f':{n}' if n else ''} {rule}" for p, n, rule, *_ in found[:5]])
 
 
+def group(cmd, matcher=None, **extra):
+    g = {"hooks": [{"type": "command", "command": cmd, **extra}]}
+    return g if matcher is None else {"matcher": matcher, **g}
+
+
+START, GUARD, VERIFY = "pwnstop start", "pwnstop guard", "pwnstop verify"
+# Agent: (project config file, {event: our entry}); the events sit under "hooks" in each file.
+HOOKS = {
+    "claude": (".claude/settings.local.json", {"SessionStart": group(START), "PreToolUse": group(GUARD, "Bash"), "Stop": group(VERIFY, timeout=120)}),
+    "codex": (".codex/hooks.json", {"SessionStart": group(START, "startup|resume"), "PreToolUse": group(GUARD, "Bash"), "Stop": group(VERIFY, timeout=120)}),
+    "gemini": (".gemini/settings.json", {"SessionStart": group(START, "*"), "BeforeTool": group(GUARD, "run_shell_command", timeout=60000),
+                                         "AfterAgent": group(VERIFY, "*", timeout=120000)}),
+    "cursor": (".cursor/hooks.json", {"sessionStart": {"command": START}, "beforeShellExecution": {"command": GUARD},
+                                      "stop": {"command": VERIFY, "timeout": 120, "loop_limit": 3}}),
+    "copilot": (".github/hooks/pwnstop.json", {"sessionStart": {"type": "command", "command": START, "timeoutSec": 30},
+                                               "preToolUse": {"type": "command", "matcher": "bash|powershell", "command": GUARD, "timeoutSec": 30},
+                                               "agentStop": {"type": "command", "command": VERIFY, "timeoutSec": 120}}),
+}
+BINARIES = {"claude": ("claude",), "codex": ("codex",), "gemini": ("gemini",), "cursor": ("cursor-agent", "cursor"), "copilot": ("copilot",)}
+IMPORTS_CLAUDE = {"cursor", "copilot"}  # they also run the hooks in a project's .claude/settings*.json
+
+
+def global_hooks(agent):
+    """The file in your home that holds this agent's hooks for every project."""
+    home = Path.home()
+    return {
+        "claude": home / ".claude/settings.json",
+        "codex": Path(os.environ.get("CODEX_HOME") or home / ".codex") / "hooks.json",
+        "gemini": home / ".gemini/settings.json",
+        "cursor": home / ".cursor/hooks.json",
+        "copilot": Path(os.environ.get("COPILOT_HOME") or home / ".copilot") / "hooks/pwnstop.json",
+    }[agent]
+
+
+def hooked_here(root, agent):
+    """Whether the project has its own pwnstop hook for this agent: then the copy in your user config steps aside."""
+    files = [HOOKS[agent][0]] if agent in HOOKS else []
+    files += [".claude/settings.local.json", ".claude/settings.json"] * (agent == "claude" or agent in IMPORTS_CLAUDE)
+    return any("pwnstop" in read(root / f) for f in files)
+
+
+def install(path, agent, everywhere=False):
+    """Add our entries to an agent's hook config, keeping what's there. Raises ValueError on invalid JSON."""
+    events = HOOKS[agent][1]
+    if everywhere:  # the project's own hook, if it has one, does the work
+        events = json.loads(json.dumps(events).replace(START, START + " --global").replace(GUARD, GUARD + " --global").replace(VERIFY, VERIFY + " --global"))
+    data = json.loads(path.read_text()) if path.exists() else {}
+    if agent in ("cursor", "copilot"):
+        data.setdefault("version", 1)
+    node = data.setdefault("hooks", {})
+    for event, entry in events.items():
+        entries = node.setdefault(event, [])
+        if "pwnstop" not in json.dumps(entries):
+            entries.append(entry)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n")
+
+
+def init(root, names):
+    everywhere = "--global" in names
+    names = [n for n in names if n != "--global"]
+    names = list(HOOKS) if names == ["all"] else names
+    names = names or [a for a in HOOKS if any(shutil.which(b) for b in BINARIES[a])
+                      or (global_hooks(a).parent.exists() if everywhere else (root / HOOKS[a][0]).parent.exists())] or ["claude"]
+    unknown = sorted(set(names) - set(HOOKS))
+    if unknown:
+        print(f"error: unknown agent(s): {', '.join(unknown)}. Known: {', '.join(HOOKS)}, all.")
+        return 2
+    claude = "claude" in names or (not everywhere and "pwnstop" in read(root / HOOKS["claude"][0]))
+    print("hooked for every project:" if everywhere else "hooked into:")
+    for agent in names:
+        if agent in IMPORTS_CLAUDE and claude and not everywhere:
+            print(f"  {agent:<8} runs the Claude Code hooks too, nothing to add")
+            continue
+        path = global_hooks(agent) if everywhere else root / HOOKS[agent][0]
+        try:
+            install(path, agent, everywhere)
+        except ValueError:
+            print(f"  {agent:<8} skipped: {path} is not valid JSON, fix it and run init again")
+            continue
+        print(f"  {agent:<8} {str(path).replace(str(Path.home()), '~', 1)}" + ("  (approve it once with /hooks in Codex)" if agent == "codex" else ""))
+    print("Every shell command the agent runs is checked before it runs, and every change before it says done.")
+    if not shutil.which("pwnstop"):
+        print("warning: `pwnstop` is not on your PATH, so the hooks can't run. Install it: uv tool install pwnstop")
+    return 0
+
+
 def installed_version():
     try:
         from importlib.metadata import version
@@ -599,10 +693,12 @@ def main(argv=None):
         except ValueError:
             data = {}
         try:
-            return hook(cmd, data if isinstance(data, dict) else {})
+            return hook(cmd, data if isinstance(data, dict) else {}, "--global" in argv[1:])
         except Exception as e:  # a bug here must not stop the agent: Copilot denies every command whose hook crashes
             print(f"pwnstop: internal error, skipped: {e!r}", file=sys.stderr)
             return 0
+    if cmd == "init":
+        return init(Path.cwd().resolve(), argv[1:])
     if cmd in ("--version", "-V", "version"):
         print(f"pwnstop {installed_version() or '(not installed: run from source)'}")
         return 0
