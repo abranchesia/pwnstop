@@ -15,9 +15,9 @@ The tests never touch the network: they fake the registries and OSV.
 
 ## What helps most
 
-- **Reports from agents marked 🧪** (Codex CLI, Cursor, Gemini CLI, Copilot CLI). [Open an issue](https://github.com/abranchesia/pwnstop/issues) and say whether the guard blocked a command and whether the stop check sent the agent back, with your `pwnstop --version`.
-- **False alarms.** Paste the line and the rule. A rule that cries wolf gets ignored, so these get fixed first.
-- **New rules.** A shell command goes in `COMMANDS`, a line of code in `RULES`. Add a case that is flagged and one that looks close but is safe to `tests/test_pwnstop.py`. Then measure the false alarms on the whole history of two or three real repos before opening the PR:
+- **Reports from agents marked 🧪** (Codex CLI, Cursor, Gemini CLI, Copilot CLI). Open an [agent report](https://github.com/abranchesia/pwnstop/issues/new?template=agent-report.yml), whether it worked or not.
+- **False alarms.** Open a [false alarm](https://github.com/abranchesia/pwnstop/issues/new?template=false-alarm.yml) with the line and the rule. A rule that cries wolf gets ignored, so these get fixed first.
+- **New rules.** Propose one with the [new rule](https://github.com/abranchesia/pwnstop/issues/new?template=new-rule.yml) form, or write it: a shell command goes in `COMMANDS`, a line of code in `RULES`. Add a case that is flagged and one that looks close but is safe to `tests/test_pwnstop.py`. Then measure the false alarms on the whole history of two or three real repos before opening the PR:
 
   ```bash
   cd some/real/repo
@@ -25,6 +25,8 @@ The tests never touch the network: they fake the registries and OSV.
   ```
 
 - **Agent adapters.** A new agent needs an entry in `HOOKS` and `BINARIES`, its payload told apart in `agent_of()`, and its way to refuse a command and to keep working in `deny()` and `reply()`.
+
+A vulnerability in pwnstop, or a way around one of its rules, goes in a private report: see [SECURITY.md](SECURITY.md).
 
 ## Rules of thumb
 

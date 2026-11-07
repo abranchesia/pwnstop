@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- `SECURITY.md`: report a vulnerability or a way around a rule privately, through GitHub's private reporting.
+- Issue forms: agent report, false alarm, new rule and bug.
+
 ## [0.1.1] - 2026-11-07
 
 ### Changed

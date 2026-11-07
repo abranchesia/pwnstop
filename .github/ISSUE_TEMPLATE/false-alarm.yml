@@ -1,0 +1,30 @@
+name: False alarm
+description: pwnstop flagged a safe line or blocked a safe command
+labels: [false-alarm]
+body:
+  - type: input
+    id: rule
+    attributes:
+      label: Rule
+      placeholder: e.g. sql-injection, pipe-to-shell, secret-default
+    validations:
+      required: true
+  - type: textarea
+    id: line
+    attributes:
+      label: The line or the command
+      description: As it was flagged, with the file name (the extension matters). Replace any real secret.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it's safe
+  - type: input
+    id: version
+    attributes:
+      label: pwnstop version
+      description: "`pwnstop --version`"
+    validations:
+      required: true

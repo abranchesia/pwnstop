@@ -192,7 +192,7 @@ It never bricks your agent: no git, no network, a timeout or a bug in pwnstop it
 
 ## Contributing
 
-Small on purpose: one file, standard library only. New rules, agent adapters and reports from agents marked 🧪 are welcome: see [CONTRIBUTING.md](https://github.com/abranchesia/pwnstop/blob/main/CONTRIBUTING.md). What changed in each version: [CHANGELOG.md](https://github.com/abranchesia/pwnstop/blob/main/CHANGELOG.md) and [Releases](https://github.com/abranchesia/pwnstop/releases). Found a bug or a false alarm? [Open an issue](https://github.com/abranchesia/pwnstop/issues) with your `pwnstop --version`.
+Small on purpose: one file, standard library only. New rules, agent adapters and reports from agents marked 🧪 are welcome: see [CONTRIBUTING.md](https://github.com/abranchesia/pwnstop/blob/main/CONTRIBUTING.md). What changed in each version: [CHANGELOG.md](https://github.com/abranchesia/pwnstop/blob/main/CHANGELOG.md) and [Releases](https://github.com/abranchesia/pwnstop/releases). Found a bug or a [false alarm](https://github.com/abranchesia/pwnstop/issues/new?template=false-alarm.yml)? [Open an issue](https://github.com/abranchesia/pwnstop/issues/new/choose) with your `pwnstop --version`. Found a way around pwnstop? Report it privately: [SECURITY.md](https://github.com/abranchesia/pwnstop/blob/main/SECURITY.md).
 
 ```bash
 uvx pytest -q   # run the tests

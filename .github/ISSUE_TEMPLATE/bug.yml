@@ -1,0 +1,24 @@
+name: Bug
+description: pwnstop did something wrong (for a false alarm, use the False alarm form)
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The command or the agent session, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: The hook's output or error, or `pwnstop check` on the same files.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Versions
+      description: "`pwnstop --version`, your OS, and the agent and its version if one was involved"
+    validations:
+      required: true

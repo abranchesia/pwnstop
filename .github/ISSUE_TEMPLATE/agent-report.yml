@@ -1,0 +1,35 @@
+name: Agent report
+description: How pwnstop behaved with your coding agent (it worked, or it didn't)
+labels: [agent-report]
+body:
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Agent
+      options: [Claude Code, OpenAI Codex CLI, Cursor, Gemini CLI, GitHub Copilot CLI, Other]
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Agent version and pwnstop version
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: Result
+      options:
+        - "It worked: the guard blocked a dangerous command, or the stop check sent the agent back to fix a hole"
+        - "The hooks never ran"
+        - "The guard ran, but the command went through"
+        - "The stop check ran, but the agent finished anyway"
+        - "The agent kept being sent back and never finished"
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: What you asked the agent, what it did, and any hook output or error. Recordings and screenshots are welcome.
