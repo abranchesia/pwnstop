@@ -22,7 +22,7 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(pwnstop, "STATE", tmp_path / "state")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setattr(pwnstop, "fetch", lambda url, body=None: (None, None), raising=False)  # offline unless a test says otherwise
-    for env in ("CLAUDE_PROJECT_DIR", "GEMINI_PROJECT_DIR", "CODEX_HOME", "COPILOT_HOME"):
+    for env in ("CLAUDE_PROJECT_DIR", "GEMINI_PROJECT_DIR", "CODEX_HOME", "COPILOT_HOME", "GITHUB_ACTIONS"):
         monkeypatch.delenv(env, raising=False)
 
 
