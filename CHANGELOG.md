@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-07
+
 ### Changed
 
 - README examples use `.example` addresses, which never resolve, instead of domains someone owns.
@@ -19,5 +21,6 @@ First release.
 - `pwnstop check FOLDER` audits every line of the skills, rules and plugins you installed.
 - `pwnstop init [--global]` for Claude Code, Codex CLI, Cursor, Gemini CLI and GitHub Copilot CLI.
 
-[Unreleased]: https://github.com/abranchesia/pwnstop/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/abranchesia/pwnstop/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/abranchesia/pwnstop/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/abranchesia/pwnstop/releases/tag/v0.1.0
