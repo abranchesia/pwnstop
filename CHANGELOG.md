@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-07
+
 ### Added
 
 - `SECURITY.md`: report a vulnerability or a way around a rule privately, through GitHub's private reporting.
@@ -27,6 +29,7 @@ First release.
 - `pwnstop check FOLDER` audits every line of the skills, rules and plugins you installed.
 - `pwnstop init [--global]` for Claude Code, Codex CLI, Cursor, Gemini CLI and GitHub Copilot CLI.
 
-[Unreleased]: https://github.com/abranchesia/pwnstop/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/abranchesia/pwnstop/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/abranchesia/pwnstop/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/abranchesia/pwnstop/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/abranchesia/pwnstop/releases/tag/v0.1.0
