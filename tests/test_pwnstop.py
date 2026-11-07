@@ -228,6 +228,10 @@ def test_ordinary_command_runs(cmd):
     ("claude mcp add fs -s user -- npx -y @acme/mcp-fs /tmp", [("npm", "@acme/mcp-fs", None)]),
     ("gemini mcp add docs uvx mcp-docs", [("PyPI", "mcp-docs", None)]),
     ("claude mcp list", []),
+    ("uv tool install -q ruff 2>&1 | tail -1", [("PyPI", "ruff", None)]),
+    ("npm install lodash > /dev/null 2>&1", [("npm", "lodash", None)]),
+    ("pip install -r requirements.txt 2>/dev/null", []),
+    ("npm i zod &>install.log", [("npm", "zod", None)]),
 ])
 def test_install_targets(cmd, expected, tmp_path):
     assert pwnstop.install_targets(cmd, tmp_path) == expected

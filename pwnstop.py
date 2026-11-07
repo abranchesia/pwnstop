@@ -217,6 +217,8 @@ PACKAGE_FIX = {
 }
 NPM_TOOLS, PY_TOOLS = {"npm", "pnpm", "yarn", "bun"}, {"pip", "pip3", "uv", "poetry", "pipx", "pdm", "rye"}
 RUNNERS = {"npx", "bunx", "pnpx", "uvx", "pipx"}
+# A redirection, not a package: 2>&1, > /dev/null, &>log, <in. It starts a word, so 'flask>=3' in quotes stays.
+REDIRECT = re.compile(r"(?:(?<=\s)|^)\d*&?(?:>>?|<)(?:&\d+|\s*[^\s'\";&|<>]+)")
 TAKES_VALUE = {"-r", "--requirement", "-c", "--constraint", "-e", "--editable", "-i", "--index-url", "--extra-index-url", "-f", "--find-links",
                "-t", "--target", "--prefix", "--registry", "-w", "--workspace", "--filter", "--python", "--group", "--optional", "--cwd", "-C"}
 
@@ -509,7 +511,7 @@ def install_targets(cmd, cwd=None):
     """[(ecosystem, name, exact version or None)] for the packages a shell command installs, or runs from a registry
     (npx, uvx). A tool already installed in the project (node_modules/.bin) isn't looked up."""
     out = []
-    for seg in re.split(r"&&|\|\||[;|\n&]", cmd):
+    for seg in re.split(r"&&|\|\||[;|\n&]", REDIRECT.sub(" ", cmd)):
         try:
             w = shlex.split(seg)
         except ValueError:

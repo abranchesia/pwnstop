@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- The guard no longer reads a redirection as a package: `uv tool install ruff 2>&1 | tail` was blocked as "2 doesn't exist on PyPI".
+
 ## [0.1.2] - 2026-11-07
 
 ### Added
