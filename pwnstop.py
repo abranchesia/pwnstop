@@ -3,30 +3,46 @@
 
 Usage:
   pwnstop check [--base REF] [files]
-                           scan the git changes (or everything changed since the branch left REF); exit 1
-                           on findings
+                           scan the git changes (or everything changed since the branch left REF) and the
+                           packages they add; exit 1 on findings
   pwnstop --version        the installed version
   pwnstop guard            hook, before a shell command: block it when it runs code from the internet,
-                           reads your keys, sends secrets out or turns off a protection
+                           reads your keys, sends secrets out, turns off a protection, or installs a
+                           package that doesn't exist, is days old or has known vulnerabilities
   pwnstop start            hook, session start: mark the time and a git snapshot
-  pwnstop verify           hook, agent stop: scan the lines added since the mark; findings go back to the
-                           agent, each one once
+  pwnstop verify           hook, agent stop: scan the lines and packages added since the mark; findings go
+                           back to the agent, each one once
 
 Agents: claude, codex, cursor, gemini, copilot.
 A line holding `pwnstop: ignore` is left alone by `check`; one the agent adds in a session is flagged.
-No git: the scan is skipped. pwnstop never bricks your agent.
+No git or no network: those checks are skipped. pwnstop never bricks your agent.
 """
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date
 from pathlib import Path
+from urllib.error import HTTPError
+from urllib.parse import quote
+from urllib.request import Request, urlopen
+
+try:
+    import tomllib
+except ImportError:  # Python < 3.11: pyproject.toml isn't read, requirements*.txt and package.json still are
+    tomllib = None
 
 STATE = Path(tempfile.gettempdir()) / "pwnstop"
 IGNORE = "pwnstop: ignore"
+NEW_DAYS = 30  # younger packages are how typosquats and names an AI made up get you
+POPULAR = 5000  # weekly downloads that make a package established: no need to look further
+NET_TIMEOUT = 5
+BIG = 2_000_000  # registry metadata this large means years of releases
 SKIP_DIRS = {"node_modules", "dist", "build", "target", "coverage", "out", "vendor", "__pycache__", "venv", ".venv"}
 TEST_NAME = re.compile(r"^test_|_test\.|_spec\.|\.(test|spec)\.|Tests?\.\w+$")
 TEST_DIRS = {"test", "tests", "spec", "__tests__", "e2e", "Tests", "fixtures"}
@@ -148,6 +164,15 @@ COMMANDS = [(name, re.compile(rx), why) for name, rx, why in [
     ("untrusted-index", r"\B--extra-index-url\b|\B--trusted-host\b|\B--index-url[=\s]+[\"']?http://|\B--registry[=\s]+[\"']?http://",
      "installs from an index besides the official one, or over plain http: that's how dependency confusion and tampered packages get in. Ask the user"),
 ]]
+PACKAGE_FIX = {
+    "package-missing": "remove it: the name is made up, and anyone can register it tomorrow with malware inside",
+    "package-malicious": "remove it, and check this machine: the registry took it down for malware",
+    "package-new": "make sure it's the package you meant (typosquats copy popular names) or pick an established one; keep it only if the user asked for it by name",
+    "package-vulnerable": "use a version without these advisories",
+}
+NPM_TOOLS, PY_TOOLS = {"npm", "pnpm", "yarn", "bun"}, {"pip", "pip3", "uv", "poetry", "pipx", "pdm", "rye"}
+TAKES_VALUE = {"-r", "--requirement", "-c", "--constraint", "-e", "--editable", "-i", "--index-url", "--extra-index-url", "-f", "--find-links",
+               "-t", "--target", "--prefix", "--registry", "-w", "--workspace", "--filter", "--python", "--group", "--optional", "--cwd", "-C"}
 
 
 def git(root, *args):
@@ -233,6 +258,126 @@ def git_changed(root, ref="HEAD"):
     return sorted(out)
 
 
+def req(line):
+    """(name, pinned version or None) from a requirement like `requests[socks]==2.32.3`, or None."""
+    m = re.match(r"\s*([A-Za-z0-9][\w.-]*)\s*(?:\[[^\]]*\])?\s*(?:==\s*([\w.]+)\s*(?:;.*)?$|[<>=!~;,(]|$)", line)
+    return (m[1].lower(), m[2]) if m and "://" not in line else None
+
+
+def npm_spec(arg):
+    """(name, exact version or None) from `name`, `@scope/name@1.2.3`; None for paths, URLs and git repos."""
+    m = re.fullmatch(r"(@[\w.-]+/[\w.-]+|[\w][\w.-]*)(?:@(.+))?", arg)
+    return (m[1], m[2] if m[2] and re.fullmatch(r"\d+\.\d+\.\d+", m[2]) else None) if m else None
+
+
+def deps_of(file, text):
+    """{package: exact version or None} a manifest asks for, by its file name."""
+    if file == "package.json":
+        try:
+            d = json.loads(text or "{}")
+        except ValueError:
+            return {}
+        sections = [d.get(s) for s in ("dependencies", "devDependencies", "optionalDependencies")] if isinstance(d, dict) else []
+        return {k: v if re.fullmatch(r"\d+\.\d+\.\d+", v) else None
+                for s in sections if isinstance(s, dict) for k, v in s.items() if isinstance(v, str) and not re.match(r"[a-z+]+:|[./~]", v)}
+    if file == "pyproject.toml":
+        try:
+            d = tomllib.loads(text) if tomllib else {}
+        except ValueError:
+            return {}
+        p = d.get("project", {})
+        reqs = [*p.get("dependencies", []), *(r for g in p.get("optional-dependencies", {}).values() for r in g),
+                *(r for g in d.get("dependency-groups", {}).values() for r in g if isinstance(r, str))]
+        out = dict(filter(None, map(req, reqs)))
+        out.update({k.lower(): None for k in d.get("tool", {}).get("poetry", {}).get("dependencies", {}) if k != "python"})
+        return out
+    return dict(filter(None, map(req, text.splitlines())))
+
+
+def new_packages(root, ref, rels):
+    """[(manifest, ecosystem, name, exact version or None)] for the packages the manifests gained since `ref`."""
+    out = []
+    for rel in rels:
+        file = Path(rel).name
+        if not (file in ("package.json", "pyproject.toml") or re.fullmatch(r"requirements[\w.-]*\.txt", file)) or is_test(rel):
+            continue
+        eco = "npm" if file == "package.json" else "PyPI"
+        old = deps_of(file, git(root, "show", f"{ref}:./{rel}") or "")
+        lock = load(root / Path(rel).parent / "package-lock.json", {}).get("packages", {}) if eco == "npm" else {}
+        for name, ver in deps_of(file, read(root / rel)).items():
+            if name not in old:
+                out.append((rel, eco, name, ver or (lock.get(f"node_modules/{name}") or {}).get("version")))
+    return out
+
+
+def fetch(url, body=None):
+    """(HTTP status, JSON or None) for a GET, or a POST of `body`. Status None: offline or too slow."""
+    headers = {"User-Agent": "pwnstop", **({"Content-Type": "application/json"} if body else {})}
+    try:
+        with urlopen(Request(url, json.dumps(body).encode() if body else None, headers), timeout=NET_TIMEOUT) as r:
+            raw = r.read(BIG + 1)
+            return r.status, None if len(raw) > BIG else json.loads(raw)
+    except HTTPError as e:
+        return e.code, None
+    except (OSError, ValueError):
+        return None, None
+
+
+def package_problem(eco, name):
+    """(rule, what's wrong) for a package that doesn't exist, was pulled for malware or is days old; None when it's
+    established, or the registry didn't answer."""
+    npm, weekly = eco == "npm", None
+    if npm:  # a popular package's npm document runs to megabytes: its download count says enough
+        status, d = fetch(f"https://api.npmjs.org/downloads/point/last-week/{name}")
+        weekly = (d or {}).get("downloads")
+        if status == 200 and isinstance(weekly, int) and weekly >= POPULAR:
+            return None
+    status, d = fetch(f"https://registry.npmjs.org/{quote(name, safe='@')}" if npm else f"https://pypi.org/pypi/{quote(name)}/json")
+    if status == 404 or (npm and status == 200 and d and (d.get("time") or {}).get("unpublished")):
+        return "package-missing", f"{name} doesn't exist on {eco}"
+    if status != 200 or not d:
+        return None
+    if npm and "security" in (d.get("dist-tags") or {}).get("latest", ""):  # 0.0.1-security: npm's placeholder for pulled malware
+        return "package-malicious", f"{name} was taken down by npm for malware"
+    if npm:
+        created = (d.get("time") or {}).get("created")
+    else:
+        created = min((f.get("upload_time_iso_8601") or "" for files in (d.get("releases") or {}).values() for f in files), default="") or None
+    try:
+        days = (date.today() - date.fromisoformat(created[:10])).days
+    except (TypeError, ValueError):
+        return None
+    if days < NEW_DAYS:
+        return "package-new", f"{name} was first published {days} day(s) ago" + (f", {weekly} download(s) last week" if isinstance(weekly, int) else "")
+    return None
+
+
+def vulnerabilities(pkgs):
+    """{(ecosystem, name, version): [advisory ids]} for the exact versions OSV knows to be vulnerable."""
+    pinned = sorted({p for p in pkgs if p[2]})
+    if not pinned:
+        return {}
+    status, d = fetch("https://api.osv.dev/v1/querybatch", {"queries": [{"package": {"ecosystem": e, "name": n}, "version": v} for e, n, v in pinned]})
+    results = (d or {}).get("results", []) if status == 200 else []
+    return {p: [v["id"] for v in r["vulns"]] for p, r in zip(pinned, results) if r.get("vulns")}
+
+
+def package_findings(pkgs):
+    """Findings for [(where, ecosystem, name, exact version or None)]: missing, pulled, new or vulnerable packages."""
+    if not pkgs:
+        return []
+    with ThreadPoolExecutor(8) as ex:
+        problems = list(ex.map(lambda p: package_problem(p[1], p[2]), pkgs))
+    vulns, found = vulnerabilities([p[1:] for p in pkgs]), []
+    for (where, eco, name, ver), problem in zip(pkgs, problems):
+        if problem:
+            found.append((where, 0, problem[0], problem[1], PACKAGE_FIX[problem[0]]))
+        elif (eco, name, ver) in vulns:
+            ids = vulns[(eco, name, ver)]
+            found.append((where, 0, "package-vulnerable", f"{name} {ver}: {', '.join(ids[:3])}" + (f" and {len(ids) - 3} more" if len(ids) > 3 else ""), PACKAGE_FIX["package-vulnerable"]))
+    return found
+
+
 def match_line(path, text, whole=lambda: ""):
     """(rule, what, fix) for the first rule an added line breaks, or None. `whole()` gives the file's text, for the
     rules that need something else in it. Docs only get the secrets check, tests the secrets and silencers ones."""
@@ -247,7 +392,8 @@ def match_line(path, text, whole=lambda: ""):
 
 
 def scan(root, ref, files, session=False):
-    """[(path, line, rule, what, fix)]: the added lines that open a hole, and the .env files git would commit.
+    """[(path, line, rule, what, fix)]: the added lines that open a hole, the .env files git would commit, and the
+    packages the manifests gained that don't exist, were pulled, are days old or have known vulnerabilities.
     `session`: an agent's changes, where a `pwnstop: ignore` it added is flagged instead of obeyed."""
     rels = [r for r in (os.path.relpath(f, root) for f in files)
             if not r.startswith("..") and not SKIP_DIRS & set(Path(r).parts) and not LOCKS.search(r)]
@@ -265,7 +411,7 @@ def scan(root, ref, files, session=False):
             hit = match_line(path, text, lambda p=path: texts.setdefault(p, read(root / p)))
             if hit:
                 found.append((path, n, *hit))
-    return found
+    return found + (package_findings(new_packages(root, ref, rels)) if ref else [])
 
 
 def message(found, session=True):
@@ -277,9 +423,68 @@ def message(found, session=True):
     return head + "\n\n" + "\n".join(out) + tail
 
 
+def install_targets(cmd, cwd=None):
+    """[(ecosystem, name, exact version or None)] for the packages a shell command installs, or runs from a registry
+    (npx, uvx). A tool already installed in the project (node_modules/.bin) isn't looked up."""
+    out = []
+    for seg in re.split(r"&&|\|\||[;|\n&]", cmd):
+        try:
+            w = shlex.split(seg)
+        except ValueError:
+            continue
+        while w and (re.match(r"\w+=", w[0]) or w[0] in ("sudo", "exec", "time", "command", "nohup")):
+            w = w[1:]
+        if len(w) > 2 and re.fullmatch(r"python[\d.]*", Path(w[0]).name) and w[1:3] == ["-m", "pip"]:
+            w = ["pip", *w[3:]]
+        if not w:
+            continue
+        tool, args = Path(w[0]).name, w[1:]
+        runs = tool in ("npx", "bunx", "pnpx") or (tool in ("pnpm", "yarn") and args[:1] == ["dlx"]) or (tool == "npm" and args[:1] in (["exec"], ["x"]))
+        runs_py = tool == "uvx" or (tool == "pipx" and args[:1] == ["run"]) or (tool == "uv" and args[:2] == ["tool", "run"])
+        if runs or runs_py:
+            if {"--no", "--no-install", "--offline"} & set(args):
+                continue
+            args = args[2 if tool == "uv" else 1:] if tool in ("pnpm", "yarn", "npm", "pipx", "uv") else args
+            named = next((args[i + 1] for i, a in enumerate(args[:-1]) if a in ("-p", "--package", "--from")), None)
+            named = named or next((a.split("=", 1)[1] for a in args if a.startswith(("--package=", "--from="))), None)
+            names = [named or next((a for a in positionals(args)), "")][:1]
+            eco = "npm" if runs else "PyPI"
+            if runs and not named and any((d / "node_modules/.bin" / names[0]).exists() for d in [Path(cwd or "."), *Path(cwd or ".").resolve().parents]):
+                continue
+        elif tool in NPM_TOOLS and args[:1] and args[0] in ("install", "i", "add"):
+            names, eco = positionals(args[1:]), "npm"
+        elif tool in PY_TOOLS and args and (args[0] in ("install", "add") or args[:2] in (["pip", "install"], ["tool", "install"])):
+            names, eco = positionals(args[2 if args[0] in ("pip", "tool") else 1:]), "PyPI"
+        else:
+            continue
+        for n in names:
+            parsed = npm_spec(n) if eco == "npm" else req(n) if not re.match(r"[./~]|\w+\+|\S*:", n) else None
+            if parsed:
+                out.append((eco, *parsed))
+    return out
+
+
+def positionals(args):
+    """The arguments that aren't flags or flag values."""
+    out, skip = [], False
+    for a in args:
+        if skip or a == "--":
+            skip = False
+            continue
+        if a.startswith("-"):
+            skip = a in TAKES_VALUE
+            continue
+        out.append(a)
+    return out
+
+
 def check_command(cmd, cwd=None):
     """[(rule, what, why)] for a shell command the agent is about to run."""
-    return [(name, m.group(0).strip()[:100], why) for name, rx, why in COMMANDS for m in [rx.search(cmd)] if m]
+    hits = [(name, m.group(0).strip()[:100], why) for name, rx, why in COMMANDS for m in [rx.search(cmd)] if m]
+    if hits:
+        return hits
+    found = package_findings([("", *t) for t in install_targets(cmd, cwd)])
+    return [(rule, what, fix) for _, _, rule, what, fix in found]
 
 
 def command_of(data):

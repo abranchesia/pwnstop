@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import time
+from datetime import date, timedelta
 
 import pytest
 
@@ -160,6 +161,92 @@ def test_ordinary_command_runs(cmd):
     assert pwnstop.check_command(cmd) == []
 
 
+@pytest.mark.parametrize("cmd,expected", [
+    ("npm install exprss-jwt", [("npm", "exprss-jwt", None)]),
+    ("npm i -D @types/node@20.1.0 lodash", [("npm", "@types/node", "20.1.0"), ("npm", "lodash", None)]),
+    ("pip install requests==2.31.0 'flask[async]>=3'", [("PyPI", "requests", "2.31.0"), ("PyPI", "flask", None)]),
+    ("python3 -m pip install -r requirements.txt", []),
+    ("uv add httpx", [("PyPI", "httpx", None)]),
+    ("uv pip install -e . rich", [("PyPI", "rich", None)]),
+    ("npx -y create-foo-app my-app", [("npm", "create-foo-app", None)]),
+    ("npx --no -- tsc", []),
+    ("uvx --from some-tool sometool", [("PyPI", "some-tool", None)]),
+    ("cd web && pnpm add zod", [("npm", "zod", None)]),
+    ("npm install ./local-pkg git+https://github.com/a/b", []),
+    ("yarn dlx create-x", [("npm", "create-x", None)]),
+])
+def test_install_targets(cmd, expected, tmp_path):
+    assert pwnstop.install_targets(cmd, tmp_path) == expected
+
+
+def test_npx_of_an_installed_tool_is_not_looked_up(tmp_path):
+    (tmp_path / "node_modules/.bin").mkdir(parents=True)
+    (tmp_path / "node_modules/.bin/vitest").write_text("")
+    assert pwnstop.install_targets("npx vitest run", tmp_path) == []
+
+
+def registry(monkeypatch, answers):
+    """Fake network: the first answer whose key is in the URL."""
+    calls = []
+
+    def fetch(url, body=None):
+        calls.append(url)
+        return next((v for k, v in answers.items() if k in url), (None, None))
+    monkeypatch.setattr(pwnstop, "fetch", fetch)
+    return calls
+
+
+def days_ago(n):
+    return (date.today() - timedelta(days=n)).isoformat() + "T10:00:00.000Z"
+
+
+def test_package_that_does_not_exist(monkeypatch):
+    registry(monkeypatch, {"api.npmjs.org": (404, None), "registry.npmjs.org": (404, None)})
+    assert pwnstop.package_problem("npm", "exprss-jwt")[0] == "package-missing"
+
+
+def test_package_published_days_ago(monkeypatch):
+    registry(monkeypatch, {"api.npmjs.org": (200, {"downloads": 12}),
+                           "registry.npmjs.org": (200, {"time": {"created": days_ago(3)}, "dist-tags": {"latest": "1.0.0"}})})
+    rule, what = pwnstop.package_problem("npm", "exprss-jwt")
+    assert rule == "package-new" and "3 day(s) ago, 12 download(s)" in what
+
+
+def test_popular_package_skips_the_registry(monkeypatch):
+    calls = registry(monkeypatch, {"api.npmjs.org": (200, {"downloads": 900000})})
+    assert pwnstop.package_problem("npm", "react") is None and len(calls) == 1
+
+
+def test_package_pulled_for_malware(monkeypatch):
+    registry(monkeypatch, {"registry.npmjs.org": (200, {"time": {"created": days_ago(400)}, "dist-tags": {"latest": "0.0.1-security"}})})
+    assert pwnstop.package_problem("npm", "evil")[0] == "package-malicious"
+
+
+def test_new_pypi_package(monkeypatch):
+    registry(monkeypatch, {"pypi.org/pypi": (200, {"releases": {"0.1": [{"upload_time_iso_8601": days_ago(2)}]}})})
+    assert pwnstop.package_problem("PyPI", "reqeusts")[0] == "package-new"
+
+
+def test_offline_lets_it_through():
+    assert pwnstop.package_problem("npm", "anything") is None
+
+
+def test_known_vulnerable_version(monkeypatch):
+    registry(monkeypatch, {"api.npmjs.org": (200, {"downloads": 900000}), "osv.dev": (200, {"results": [{"vulns": [{"id": "GHSA-xxxx"}]}]})})
+    (found,) = pwnstop.package_findings([("package.json", "npm", "lodash", "4.17.4")])
+    assert found[2] == "package-vulnerable" and "GHSA-xxxx" in found[3]
+
+
+def test_new_dependencies_in_manifests(tmp_path):
+    root = repo(tmp_path, {"package.json": json.dumps({"dependencies": {"react": "^18.0.0"}}), "requirements.txt": "flask\n"})
+    (root / "package.json").write_text(json.dumps({"dependencies": {"react": "^18.0.0", "exprss-jwt": "^1.0.0", "local": "file:../x"}}))
+    (root / "requirements.txt").write_text("flask\nrequests==2.31.0\n# comment\n-r other.txt\n")
+    ref = pwnstop.snapshot(root)
+    assert pwnstop.new_packages(root, "HEAD", ["package.json", "requirements.txt"]) == [
+        ("package.json", "npm", "exprss-jwt", None), ("requirements.txt", "PyPI", "requests", "2.31.0")]
+    assert ref
+
+
 def test_check_flags_a_change_and_obeys_ignore(tmp_path, monkeypatch, capsys):
     root = repo(tmp_path)
     monkeypatch.chdir(root)
@@ -230,6 +317,13 @@ def test_guard_speaks_cursor_and_copilot(tmp_path, capsys):
     copilot = {"toolName": "bash", "toolArgs": json.dumps({"command": "cat ~/.ssh/id_rsa"}), "cwd": str(tmp_path)}
     assert pwnstop.hook("guard", copilot) == 2
     assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+
+def test_guard_checks_packages_before_install(tmp_path, monkeypatch, capsys):
+    registry(monkeypatch, {"api.npmjs.org": (404, None), "registry.npmjs.org": (404, None)})
+    data = {"tool_name": "Bash", "tool_input": {"command": "npm install exprss-jwt"}, "cwd": str(tmp_path)}
+    assert pwnstop.hook("guard", data) == 2
+    assert "package-missing" in capsys.readouterr().err
 
 
 def test_a_crash_never_blocks_the_agent(monkeypatch, capsys):
