@@ -619,7 +619,7 @@ def reply(agent, error=None, notes=()):
     elif error:
         out = {"decision": "block", "reason": error}
     elif notes and agent == "claude":
-        out = {"systemMessage": "pwnstop: " + "; ".join(notes)}
+        out = {"systemMessage": "pwnstop: " + "; ".join(notes) + "."}
     else:
         return 0
     print(json.dumps(out))
@@ -659,15 +659,18 @@ def hook(event, data, everywhere=False):
         return reply(agent)
     if data.get("status") in ("aborted", "error"):
         return reply(agent)
-    since, refs, flagged = float(since_f.read_text()), load(STATE / f"{sid}.refs", {}), set(load(flagged_f, []))
-    found = [f for r in roots for f in scan(r, refs.get(str(r)), changed_since(r, since), session=True)]
+    t0, since, refs, flagged = time.time(), float(since_f.read_text()), load(STATE / f"{sid}.refs", {}), set(load(flagged_f, []))
+    changed = {r: changed_since(r, since) for r in roots}
+    found = [f for r in roots for f in scan(r, refs.get(str(r)), changed[r], session=True)]
     keys = {f"{p}:{rule}:{what}" for p, _, rule, what, _ in found}
     new = [f for f in found if f"{f[0]}:{f[2]}:{f[3]}" not in flagged]
     flagged_f.write_text(json.dumps(sorted(flagged | keys)))
     if new:
         return reply(agent, message(new))
     mark(sid, roots)
-    return reply(agent, notes=[f"kept after being told: {p}{f':{n}' if n else ''} {rule}" for p, n, rule, *_ in found[:5]])
+    files = sum(map(len, changed.values()))
+    receipt = [f"✓ {files} changed file{'s' * (files != 1)}, no security holes ({time.time() - t0:.1f} s)"] if files and not found else []
+    return reply(agent, notes=receipt + [f"kept after being told: {p}{f':{n}' if n else ''} {rule}" for p, n, rule, *_ in found[:5]])
 
 
 def group(cmd, matcher=None, **extra):
